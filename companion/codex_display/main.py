@@ -2,214 +2,119 @@ import argparse
 import asyncio
 import logging
 import os
-from dataclasses import replace
+import platform
+import time
+from typing import Callable
+from pathlib import Path
 from logging.handlers import RotatingFileHandler
-from typing import Optional, Set
+from typing import Optional
 
-from .app_server import AppServerClient
 from .ble import BleCompanion
-from .hook_events import HookActivityTracker
-from .local_usage import read_local_tokens
-from .metrics import (
-    Snapshot,
-    collect_active_thread_state,
-    collect_snapshot_state,
-)
+from .magpie_client import MagpieClient
+from .metrics import Snapshot, collect_snapshot
 from .protocol import encode_snapshot
+from .runtime import ServiceLock
 
 
 class SnapshotCache:
-    def __init__(self, client: AppServerClient, refresh_seconds: float) -> None:
+    def __init__(self, client: MagpieClient, refresh_seconds: float, on_snapshot: Optional[Callable] = None) -> None:
         self._client = client
         self._refresh_seconds = refresh_seconds
         self._snapshot: Optional[Snapshot] = None
         self._updated_at = 0.0
         self._sequence = 0
         self._lock = asyncio.Lock()
-        self._active_paths: Set[str] = set()
-        self._activity: Optional[HookActivityTracker] = None
         self.status_changed = asyncio.Event()
-
-    def attach_activity(self, activity: HookActivityTracker) -> None:
-        self._activity = activity
-
-    def _active_count(self) -> int:
-        assert self._snapshot is not None
-        extra = (
-            self._activity.extra_count(self._active_paths)
-            if self._activity is not None
-            else 0
-        )
-        return self._snapshot.active_threads + extra
-
-    def _current_snapshot(self) -> Snapshot:
-        assert self._snapshot is not None
-        snapshot = self._snapshot
-        local_tokens = read_local_tokens()
-        if local_tokens is not None and local_tokens > snapshot.tokens_today:
-            snapshot = replace(
-                snapshot,
-                tokens_today=local_tokens,
-                tokens_today_estimated=True,
-            )
-        return replace(snapshot, active_threads=self._active_count())
+        self._on_snapshot = on_snapshot
 
     async def encoded(self) -> bytes:
         loop = asyncio.get_running_loop()
-        if (
-            self._snapshot is None
-            or loop.time() - self._updated_at >= self._refresh_seconds
-        ):
+        if self._snapshot is None or loop.time() - self._updated_at >= self._refresh_seconds:
             await self.refresh()
         assert self._snapshot is not None
-        snapshot = self._current_snapshot()
-        return encode_snapshot(snapshot, self._sequence)
+        return encode_snapshot(self._snapshot, self._sequence, sent_at=int(time.time()))
 
     async def refresh(self) -> None:
         async with self._lock:
-            self._snapshot, self._active_paths = await collect_snapshot_state(
-                self._client
-            )
+            try:
+                self._snapshot = await collect_snapshot(self._client)
+            except Exception:
+                self._snapshot = None
+                raise
             self._updated_at = asyncio.get_running_loop().time()
             self._sequence += 1
-            current = self._current_snapshot()
+            if self._on_snapshot:
+                self._on_snapshot(self._snapshot)
             logging.info(
-                "Data updated: remaining %d%%, today %s%d, 7d %d, "
-                "reset %d, running %d",
-                current.remaining_percent,
-                "~" if current.tokens_today_estimated else "",
-                current.tokens_today,
-                current.tokens_7d,
-                current.reset_credits,
-                current.active_threads,
+                "Magpie updated: remaining %d%%, today %d tokens, 7d %d tokens, calls %d, errors %d",
+                self._snapshot.remaining_percent,
+                self._snapshot.tokens_today,
+                self._snapshot.tokens_7d,
+                self._snapshot.calls_today,
+                self._snapshot.errors_today,
             )
-
-    async def activity_changed(self) -> None:
-        try:
-            count, paths = await collect_active_thread_state(self._client)
-        except Exception as error:
-            logging.warning("Immediate RUN reconciliation failed: %s", error)
-            count = None
-            paths = set()
-        async with self._lock:
-            if self._snapshot is not None and count is not None:
-                self._snapshot = replace(
-                    self._snapshot,
-                    active_threads=count,
-                )
-                self._active_paths = paths
-            self._sequence += 1
-            self.status_changed.set()
-
-    async def reconcile_active(self) -> None:
-        count, paths = await collect_active_thread_state(self._client)
-        async with self._lock:
-            if self._snapshot is None:
-                return
-            before = self._active_count()
-            self._snapshot = replace(self._snapshot, active_threads=count)
-            self._active_paths = paths
-            if self._active_count() != before:
-                self._sequence += 1
-                self.status_changed.set()
-
-
-async def reconcile_active_loop(
-    cache: SnapshotCache,
-    seconds: float,
-    connected: asyncio.Event,
-) -> None:
-    while True:
-        await asyncio.sleep(seconds)
-        if not connected.is_set():
-            continue
-        try:
-            await cache.reconcile_active()
-        except Exception as error:
-            logging.warning("Periodic RUN reconciliation failed: %s", error)
 
 
 async def run(args: argparse.Namespace) -> None:
-    client = AppServerClient(args.codex_bin)
-    await client.start()
-    try:
-        cache = SnapshotCache(client, args.refresh_seconds)
-        if args.once:
-            print((await cache.encoded()).decode("utf-8"))
-            return
+    cache = SnapshotCache(MagpieClient(args.magpie_url), args.refresh_seconds)
+    if args.once:
+        print((await cache.encoded()).decode("utf-8"))
+        return
 
-        activity = HookActivityTracker(cache.activity_changed)
-        cache.attach_activity(activity)
-        companion = BleCompanion(
-            cache.encoded,
-            cache.refresh,
-            device_name=args.device,
-            heartbeat_seconds=args.heartbeat_seconds,
-            status_changed=cache.status_changed,
-        )
-        hook_task = asyncio.create_task(activity.run_forever())
-        reconcile_task = asyncio.create_task(
-            reconcile_active_loop(
-                cache,
-                args.run_reconcile_seconds,
-                companion.connected_event,
-            )
-        )
-        companion_task = asyncio.create_task(companion.run_forever())
-        app_server_task = asyncio.create_task(client.wait_for_exit())
-        tasks = [
-            hook_task,
-            reconcile_task,
-            companion_task,
-            app_server_task,
-        ]
-        try:
-            done, _ = await asyncio.wait(
-                [companion_task, app_server_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if app_server_task in done:
-                app_server_task.result()
-            companion_task.result()
-            raise RuntimeError("BLE companion exited unexpectedly")
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-    finally:
-        await client.stop()
+    companion = BleCompanion(
+        cache.encoded,
+        cache.refresh,
+        device_name=args.device,
+        heartbeat_seconds=args.heartbeat_seconds,
+        status_changed=cache.status_changed,
+    )
+    await companion.run_forever()
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Codex Usage Display macOS BLE Companion"
-    )
-    parser.add_argument("--device", default="Codex Display")
-    parser.add_argument("--codex-bin")
-    parser.add_argument("--refresh-seconds", type=float, default=60)
-    parser.add_argument("--heartbeat-seconds", type=float, default=15)
-    parser.add_argument("--run-reconcile-seconds", type=float, default=30)
+    parser = argparse.ArgumentParser(description="Magpie Usage Display BLE Companion")
+    parser.add_argument("--device", default="Magpie Display")
     parser.add_argument(
-        "--once",
-        action="store_true",
-        help="读取一次真实 Codex 数据并打印，不连接 BLE",
+        "--magpie-url",
+        default=os.environ.get("MAGPIE_URL", "http://127.0.0.1:3425"),
+    )
+    parser.add_argument("--refresh-seconds", type=positive_seconds, default=15)
+    parser.add_argument("--heartbeat-seconds", type=heartbeat_seconds, default=15)
+    parser.add_argument(
+        "--once", action="store_true", help="读取一次本机 Magpie 数据并打印，不连接 BLE"
     )
     parser.add_argument("--verbose", action="store_true")
     return parser
 
 
+def positive_seconds(value: str) -> float:
+    import math
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("seconds must be positive and finite")
+    return seconds
+
+
+def heartbeat_seconds(value: str) -> float:
+    seconds = positive_seconds(value)
+    if seconds > 30:
+        raise argparse.ArgumentTypeError("heartbeat must be <= 30 seconds (firmware watchdog)")
+    return seconds
+
+
 def main() -> None:
     args = build_parser().parse_args()
-    log_path = os.environ.get("CODEX_DISPLAY_LOG")
+    log_path = os.environ.get("MAGPIE_DISPLAY_LOG")
+    if not log_path and platform.system() == "Windows":
+        log_path = str(Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) /
+                       "MagpieUsageDisplay" / "companion.log")
     handlers = None
     if log_path:
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
         handlers = [
+            logging.StreamHandler(),
             RotatingFileHandler(
-                log_path,
-                maxBytes=1024 * 1024,
-                backupCount=1,
-                encoding="utf-8",
+                log_path, maxBytes=1024 * 1024, backupCount=1, encoding="utf-8"
             )
         ]
     logging.basicConfig(
@@ -218,7 +123,11 @@ def main() -> None:
         handlers=handlers,
     )
     try:
-        asyncio.run(run(args))
+        if args.once:
+            asyncio.run(run(args))
+        else:
+            with ServiceLock():
+                asyncio.run(run(args))
     except KeyboardInterrupt:
         pass
     except Exception:

@@ -1,9 +1,9 @@
-import json
-import os
+import asyncio
 import time
+import math
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterable, Optional
 
 
 @dataclass(frozen=True)
@@ -14,76 +14,94 @@ class Snapshot:
     limit_window_minutes: int
     quota_reset_seconds: int
     tokens_today: int
-    tokens_today_estimated: bool
     tokens_7d: int
-    reset_credits: int
-    next_credit_expiry_seconds: int
-    active_threads: int
-
-
-def _clamp(value: int, minimum: int, maximum: int) -> int:
-    return max(minimum, min(value, maximum))
-
-
-def _seconds_until(timestamp: Optional[int], now: int) -> int:
-    if timestamp is None:
-        return 0
-    return max(0, int(timestamp) - now)
+    errors_today: int
+    calls_today: int
+    success_permille: int
+    average_ttft_ms: int
+    latest_model: str
+    latest_status: int
+    latest_latency_ms: int
+    latest_failed: bool
+    session_count: int
+    total_calls: int
+    total_input: int
+    total_output: int
+    total_cache_read: int
+    total_reasoning: int
+    total_cost_micros: int
+    cache_hit_permille: int
+    top_model: str
+    top_model_calls: int
+    short_remaining_percent: int = -1
+    short_reset_at: int = 0
+    weekly_remaining_percent: int = -1
+    weekly_reset_at: int = 0
 
 
 def build_snapshot(
-    rate_limit_result: Dict[str, Any],
+    quotas_result: Dict[str, Any],
     usage_result: Dict[str, Any],
-    threads: Iterable[Dict[str, Any]],
+    requests_result: Optional[Dict[str, Any]] = None,
     now: Optional[int] = None,
-    local_date: Optional[date] = None,
     utc_offset_minutes: Optional[int] = None,
 ) -> Snapshot:
     now = int(time.time()) if now is None else now
-    # Codex dailyUsageBuckets use UTC calendar dates, independent of the
-    # computer's local timezone.
-    local_date = (
-        datetime.now(timezone.utc).date() if local_date is None else local_date
-    )
     if utc_offset_minutes is None:
-        local_seconds = (
-            datetime_offset_seconds(now)
-        )
-        utc_offset_minutes = int(local_seconds // 60)
+        utc_offset_minutes = int(datetime_offset_seconds(now) // 60)
 
-    limits_by_id = rate_limit_result.get("rateLimitsByLimitId") or {}
-    limits = limits_by_id.get("codex") or rate_limit_result.get("rateLimits") or {}
-    window = limits.get("primary") or {}
-    used_percent = _clamp(int(window.get("usedPercent", 100)), 0, 100)
-    remaining_percent = 100 - used_percent
-    limit_window_minutes = max(0, int(window.get("windowDurationMins") or 0))
-    quota_reset_seconds = _seconds_until(window.get("resetsAt"), now)
-
-    buckets = {
-        item.get("startDate"): max(0, int(item.get("tokens", 0)))
-        for item in usage_result.get("dailyUsageBuckets") or []
-        if item.get("startDate")
-    }
-    today_key = local_date.isoformat()
-    tokens_today_estimated = today_key not in buckets
-    tokens_today = buckets.get(today_key, 0)
-    tokens_7d = sum(
-        buckets.get((local_date - timedelta(days=offset)).isoformat(), 0)
-        for offset in range(7)
+    quota = _most_constrained_window(quotas_result.get("data") or [])
+    remaining_percent = _percent(quota.get("remaining") if quota else 100)
+    quota_reset_seconds = _iso_seconds_until(
+        quota.get("resetsAt") if quota else None, now
     )
+    limit_window_minutes = _window_minutes(quota.get("name", "") if quota else "")
+    short_window, weekly_window = _codex_windows(quotas_result.get("data") or [])
 
-    credit_summary = rate_limit_result.get("rateLimitResetCredits") or {}
-    reset_credits = max(0, int(credit_summary.get("availableCount", 0)))
-    expiries = [
-        int(credit["expiresAt"])
-        for credit in credit_summary.get("credits") or []
-        if credit.get("status") == "available"
-        and credit.get("expiresAt") is not None
-        and int(credit["expiresAt"]) > now
-    ]
-    next_expiry_seconds = _seconds_until(min(expiries) if expiries else None, now)
-
-    active_threads = sum(1 for thread in threads if thread_is_active(thread))
+    series = usage_result.get("series") or []
+    today = series[-1] if series else {}
+    # A sparse series may end yesterday; don't relabel that bucket as today.
+    if today.get("time"):
+        try:
+            bucket_date = datetime.fromisoformat(today["time"].replace("Z", "+00:00")).date()
+            local_date = datetime.fromtimestamp(now + utc_offset_minutes * 60, timezone.utc).date()
+            if bucket_date != local_date:
+                today = {}
+        except (TypeError, ValueError, OverflowError):
+            today = {}
+    recent = series[-7:]
+    tokens_today = _tokens(today)
+    tokens_7d = sum(_tokens(bucket) for bucket in recent)
+    calls_today = max(0, int(today.get("calls") or 0))
+    errors_today = min(calls_today, max(0, int(today.get("errors") or 0)))
+    success_permille = (
+        round((calls_today - errors_today) * 1000 / calls_today)
+        if calls_today
+        else 1000
+    )
+    timed_today = max(0, int(today.get("timed") or 0))
+    average_ttft_ms = (
+        max(0, int(today.get("ttft_ms") or 0)) // timed_today
+        if timed_today
+        else 0
+    )
+    latest = ((requests_result or {}).get("rows") or [{}])[0]
+    latest_model = str(latest.get("served") or latest.get("model") or "")[:23]
+    latest_status = max(0, int(latest.get("status") or 0))
+    total_input = max(0, int(usage_result.get("input") or 0))
+    total_output = max(0, int(usage_result.get("output") or 0))
+    total_cache_read = max(0, int(usage_result.get("cache_read") or 0))
+    total_reasoning = max(0, int(usage_result.get("reasoning") or 0))
+    cache_base = total_input + total_cache_read
+    cache_hit_permille = (
+        round(total_cache_read * 1000 / cache_base) if cache_base else 0
+    )
+    models = usage_result.get("models") or []
+    top_model_row = max(
+        models,
+        key=lambda item: max(0, int(item.get("calls") or 0)),
+        default={},
+    )
 
     return Snapshot(
         generated_at=now,
@@ -92,12 +110,126 @@ def build_snapshot(
         limit_window_minutes=limit_window_minutes,
         quota_reset_seconds=quota_reset_seconds,
         tokens_today=tokens_today,
-        tokens_today_estimated=tokens_today_estimated,
         tokens_7d=tokens_7d,
-        reset_credits=reset_credits,
-        next_credit_expiry_seconds=next_expiry_seconds,
-        active_threads=active_threads,
+        errors_today=errors_today,
+        calls_today=calls_today,
+        success_permille=success_permille,
+        average_ttft_ms=average_ttft_ms,
+        latest_model=latest_model,
+        latest_status=latest_status,
+        latest_latency_ms=max(0, int(latest.get("ms") or 0)),
+        latest_failed=bool(
+            latest.get("err")
+            or latest.get("error")
+            or latest_status < 200
+            or latest_status >= 400
+        ),
+        session_count=max(0, int(usage_result.get("sessionCount") or 0)),
+        total_calls=max(0, int(usage_result.get("calls") or 0)),
+        total_input=total_input,
+        total_output=total_output,
+        total_cache_read=total_cache_read,
+        total_reasoning=total_reasoning,
+        total_cost_micros=max(
+            0, round(float(usage_result.get("cost") or 0) * 1_000_000)
+        ),
+        cache_hit_permille=cache_hit_permille,
+        top_model=str(
+            top_model_row.get("name") or top_model_row.get("model") or ""
+        )[:23],
+        top_model_calls=max(0, int(top_model_row.get("calls") or 0)),
+        short_remaining_percent=_window_percent(short_window),
+        short_reset_at=_reset_at(short_window),
+        weekly_remaining_percent=_window_percent(weekly_window),
+        weekly_reset_at=_reset_at(weekly_window),
     )
+
+
+def _percent(value: Any) -> int:
+    try:
+        return max(0, min(100, int(round(float(value)))))
+    except (TypeError, ValueError, OverflowError):
+        return 100
+
+
+def _tokens(bucket: Dict[str, Any]) -> int:
+    return sum(
+        max(0, int(bucket.get(key) or 0))
+        for key in ("input", "output", "reasoning", "cache_read", "cache_write")
+    )
+
+
+def _most_constrained_window(
+    providers: Iterable[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    windows = [
+        window
+        for provider in providers
+        for window in provider.get("windows") or []
+        if not window.get("unlimited")
+        and type(window.get("remaining")) in (int, float)
+        and math.isfinite(window["remaining"])
+    ]
+    return min(windows, key=lambda item: item["remaining"], default=None)
+
+
+def _codex_windows(providers):
+    windows = [w for p in providers
+               if str(p.get("provider") or p.get("name") or "").casefold() == "codex"
+               for w in (p.get("windows") or []) if isinstance(w, dict) and not w.get("unlimited")]
+    def find(minutes):
+        candidates = [w for w in windows if _window_minutes(str(w.get("name") or "")) == minutes
+                      and _window_percent(w) >= 0]
+        return min(candidates, key=lambda w: w['remaining'], default=None)
+    return find(300), find(10080)
+
+
+def _window_percent(window):
+    value = window.get("remaining") if window else None
+    if type(value) not in (int, float) or not math.isfinite(value):
+        return -1
+    return _percent(value)
+
+
+def _reset_at(window):
+    value = window.get("resetsAt") if window else None
+    if not isinstance(value, str):
+        return 0
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        # Reset strings without an explicit timezone are ambiguous.
+        return max(0, int(parsed.timestamp())) if parsed.tzinfo else 0
+    except (ValueError, OverflowError, OSError):
+        return 0
+
+
+def _iso_seconds_until(value: Optional[str], now: int) -> int:
+    timestamp = _reset_at({"resetsAt": value})
+    return max(0, timestamp - now) if timestamp else 0
+
+
+def _window_minutes(name: str) -> int:
+    parts = name.lower().split()
+    aliases = {"daily": 1440, "weekly": 10080, "monthly": 43200}
+    if name.lower() in aliases:
+        return aliases[name.lower()]
+    if len(parts) < 2:
+        return 0
+    try:
+        amount = int(parts[0])
+    except ValueError:
+        return 0
+    units = {
+        "minute": 1,
+        "minutes": 1,
+        "hour": 60,
+        "hours": 60,
+        "day": 1440,
+        "days": 1440,
+        "week": 10080,
+        "weeks": 10080,
+    }
+    return amount * units.get(parts[1], 0)
 
 
 def datetime_offset_seconds(now: Optional[int] = None) -> int:
@@ -108,133 +240,11 @@ def datetime_offset_seconds(now: Optional[int] = None) -> int:
     return -time.timezone
 
 
-def thread_is_active(thread: Dict[str, Any]) -> bool:
-    path = thread.get("path")
-    if path and os.path.isfile(path):
-        return rollout_is_active(path)
-
-    status = thread.get("status") or {}
-    return status.get("type") == "active"
-
-
-def rollout_is_active(
-    path: str, tail_bytes: int = 1024 * 1024, stale_seconds: int = 30 * 60
-) -> bool:
-    try:
-        size = os.path.getsize(path)
-        if time.time() - os.path.getmtime(path) > stale_seconds:
-            return False
-        with open(path, "rb") as handle:
-            if size > tail_bytes:
-                handle.seek(size - tail_bytes)
-                handle.readline()
-            lines = handle.readlines()
-    except OSError:
-        return False
-
-    for raw_line in reversed(lines):
-        try:
-            record = json.loads(raw_line)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            continue
-        if record.get("type") != "event_msg":
-            continue
-        event_type = (record.get("payload") or {}).get("type")
-        if event_type == "task_complete":
-            return False
-        if event_type == "task_started":
-            return True
-    return False
-
-
-def rollout_turn_state(
-    path: str, turn_id: str, tail_bytes: int = 1024 * 1024
-) -> Optional[bool]:
-    """Return True/False for this exact turn, or None if no boundary exists."""
-    try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as handle:
-            if size > tail_bytes:
-                handle.seek(size - tail_bytes)
-                handle.readline()
-            lines = handle.readlines()
-    except OSError:
-        return None
-
-    for raw_line in reversed(lines):
-        try:
-            record = json.loads(raw_line)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            continue
-        if record.get("type") != "event_msg":
-            continue
-        payload = record.get("payload") or {}
-        if payload.get("turn_id") != turn_id:
-            continue
-        if payload.get("type") == "task_complete":
-            return False
-        if payload.get("type") == "task_started":
-            return True
-    return None
-
-
-def active_thread_state(
-    threads: Iterable[Dict[str, Any]]
-) -> Tuple[int, Set[str]]:
-    count = 0
-    paths: Set[str] = set()
-    for thread in threads:
-        if not thread_is_active(thread):
-            continue
-        count += 1
-        path = thread.get("path")
-        if path:
-            paths.add(os.path.realpath(path))
-    return count, paths
-
-
 async def collect_snapshot(client: Any) -> Snapshot:
-    snapshot, _ = await collect_snapshot_state(client)
-    return snapshot
-
-
-async def collect_snapshot_state(client: Any) -> Tuple[Snapshot, Set[str]]:
-    rate_limits, usage, thread_result = await gather_metrics(client)
-    threads = thread_result.get("data") or []
-    snapshot = build_snapshot(rate_limits, usage, threads)
-    _, active_paths = active_thread_state(threads)
-    return snapshot, active_paths
-
-
-async def collect_active_thread_state(
-    client: Any, limit: int = 100
-) -> Tuple[int, Set[str]]:
-    result = await client.request(
-        "thread/list",
-        {
-            "limit": limit,
-            "sortKey": "recency_at",
-            "sortDirection": "desc",
-            "useStateDbOnly": True,
-        },
+    await client.health()
+    quotas, usage, requests = await asyncio.gather(
+        client.get("/v1/magpie/quotas"),
+        client.get("/v1/magpie/usage"),
+        client.get("/v1/magpie/usage/requests?limit=1"),
     )
-    return active_thread_state(result.get("data") or [])
-
-
-async def gather_metrics(client: Any) -> List[Dict[str, Any]]:
-    import asyncio
-
-    results = await asyncio.gather(
-        client.request("account/rateLimits/read"),
-        client.request("account/usage/read"),
-        client.request(
-            "thread/list",
-            {
-                "limit": 100,
-                "sortKey": "recency_at",
-                "sortDirection": "desc",
-                "useStateDbOnly": True,
-            },
-        ),
-    )
-    return list(results)
+    return build_snapshot(quotas, usage, requests)

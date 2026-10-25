@@ -1,3 +1,3 @@
-"""BLE companion for the Codex Usage Display."""
+"""BLE companion for the Magpie Usage Display."""
 
-__version__ = "0.1.0"
+__version__ = "1.3.1"

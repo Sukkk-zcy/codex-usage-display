@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="990" viewBox="0 0 1440 990" role="img" aria-labelledby="title desc">
+<title id="title">ESP32 ST7789 signal wiring</title><desc id="desc">MOSI 23, SCLK 18, optional MISO 19, DC 2, reset 4, CS 5, backlight control 17. Buttons 25, 26, 27 to ground. Use common ground and 3.3 volt logic. Supply and backlight drive depend on the module.</desc>
+<rect width="1440" height="990" rx="28" fill="#0b141b"/>
+<g font-family="Segoe UI,Arial,sans-serif">
+<text x="58" y="66" fill="#edf3f5" font-size="32" font-weight="700">ESP32 + ST7789</text><text x="58" y="105" fill="#94a8b5" font-size="21">SIGNAL WIRING · 3.3 V LOGIC · COMMON GROUND</text>
+<g fill="#14232e" stroke="#263b49" stroke-width="2"><rect x="70" y="150" width="360" height="640" rx="24"/><rect x="1000" y="150" width="370" height="640" rx="24"/></g>
+<g fill="#edf3f5" font-size="27" font-weight="700"><text x="100" y="200">ESP32 Dev Module</text><text x="1030" y="200">ST7789 module</text></g>
+<g fill="#94a8b5" font-size="20"><text x="100" y="235">Classic ESP32 · 4 MB Flash</text><text x="1030" y="235">240 × 320 → landscape</text></g>
+<g fill="#edf3f5" font-size="23"><text x="130" y="295">GPIO23</text><text x="130" y="355">GPIO18</text><text x="130" y="415">GPIO19</text><text x="130" y="475">GPIO2</text><text x="130" y="535">GPIO4</text><text x="130" y="595">GPIO5</text><text x="130" y="655">GPIO17</text><text x="130" y="715">GND</text><text x="1030" y="295">MOSI / SDA / DIN</text><text x="1030" y="355">SCLK / SCL / CLK</text><text x="1030" y="415">MISO / SDO *</text><text x="1030" y="475">DC / A0</text><text x="1030" y="535">RST / RES</text><text x="1030" y="595">CS</text><text x="1030" y="655">BL control input **</text><text x="1030" y="715">GND</text></g>
+<g fill="none" stroke-width="4"><path stroke="#46dbbf" d="M430 286 H1000 M430 346 H1000"/><path stroke="#839fff" stroke-dasharray="8 7" d="M430 406 H1000"/><path stroke="#ffc46b" d="M430 466 H1000 M430 526 H1000 M430 586 H1000"/><path stroke="#839fff" d="M430 646 H1000"/><path stroke="#94a8b5" d="M430 706 H1000"/></g>
+<g fill="#94a8b5" font-size="18" text-anchor="middle"><text x="715" y="273">SPI DATA</text><text x="715" y="333">SPI CLOCK</text><text x="715" y="393">OPTIONAL READ</text><text x="715" y="633">PWM 50 / 255 · via existing driver</text></g>
+<rect x="480" y="744" width="475" height="120" rx="20" fill="#14232e" stroke="#263b49"/>
+<text x="505" y="780" fill="#edf3f5" font-size="23" font-weight="700">Buttons → GND</text><text x="505" y="816" fill="#46dbbf" font-size="21">LEFT 25     MIDDLE 26     RIGHT 27</text><text x="505" y="845" fill="#94a8b5" font-size="17">Active low · internal pull-ups</text>
+<text x="58" y="908" fill="#94a8b5" font-size="19">* Leave MISO unconnected if the display has no SDO. Power VCC according to the module specification.</text>
+<text x="58" y="944" fill="#ffc46b" font-size="19">** GPIO17 is a control signal. A bare backlight LED may require a transistor / MOSFET driver.</text>
+</g></svg>

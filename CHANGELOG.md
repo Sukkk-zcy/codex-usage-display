@@ -1,12 +1,14 @@
-# Changelog
+# 更新记录
 
-All notable changes to this project will be documented in this file.
+## 1.3.1 — 2026-10-25
 
-## 0.1.0 - 2026-07-19
+首个公开的 ESP32/ST7789 + Windows 移植发行版，基于当前本地版本：
 
-- Initial firmware for Waveshare ESP32-S3-Touch-AMOLED-2.16.
-- Added the 480 × 480 LVGL usage dashboard and touch actions.
-- Added encrypted BLE pairing, status transport, and allowlisted commands.
-- Added the macOS Companion for Codex quota, token, reset credit, and RUN data.
-- Added global Codex lifecycle Hook integration with transcript confirmation.
-- Added automatic screen sleep, wake-on-running behavior, and bond reset.
+- Codex 5 小时 / 每周剩余额度独立显示，支持绝对重置时刻、未知状态和到期等待确认。
+- 四页 TFT 看板、4 位灰度抗锯齿字形、额度缓动、按键切页与熄屏。
+- Windows GUI、API 状态、手动刷新、可选登录启动、轮转日志与实例互斥。
+- 系统六位码配对保护、已知 WinRT 端点恢复、加密服务清理及断电重连退避。
+- 保留 BLE v4，新增可选双额度 `q` 数组并约束 250 字节负载。
+- 公开固件、客户端、57 项回归测试、必要库、文档与可复现示例配图。
+
+历史上游功能与版本可在 Git 历史或 [原项目](https://github.com/jayyao97/codex-usage-display) 查看。验证范围和待确认硬件行为见 [验证记录](docs/VALIDATION.md)。

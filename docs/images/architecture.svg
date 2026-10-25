@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="600" viewBox="0 0 1440 600" role="img" aria-labelledby="title desc">
+<title id="title">Magpie Display data flow</title><desc id="desc">Magpie Agent exposes a local API. The Windows companion collects statistics every 15 seconds and sends them over encrypted BLE to an ESP32 ST7789 display. Display buttons request refresh or focus the Agent.</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10" fill="none" stroke="#46dbbf" stroke-width="1.7"/></marker></defs>
+<rect width="1440" height="600" rx="28" fill="#0b141b"/>
+<g font-family="Segoe UI,Arial,sans-serif">
+<text x="58" y="66" fill="#edf3f5" font-size="32" font-weight="700">Your usage, on a small screen.</text>
+<text x="58" y="103" fill="#94a8b5" font-size="20">LOCAL API → WINDOWS COMPANION → ENCRYPTED BLE</text>
+<rect x="38" y="142" width="880" height="370" rx="22" fill="none" stroke="#355065" stroke-dasharray="8 8" stroke-width="2"/>
+<text x="62" y="180" fill="#94a8b5" font-size="18">WINDOWS PC</text>
+<g fill="#14232e" stroke="#263b49" stroke-width="2"><rect x="66" y="222" width="340" height="212" rx="20"/><rect x="530" y="222" width="360" height="212" rx="20"/><rect x="1032" y="222" width="340" height="212" rx="20"/></g>
+<g fill="#edf3f5" font-size="26" font-weight="700"><text x="92" y="268">Magpie Agent</text><text x="556" y="268">Desktop companion</text><text x="1058" y="268">ESP32 + ST7789</text></g>
+<g fill="#94a8b5" font-size="20"><text x="92" y="309">127.0.0.1:3425</text><text x="92" y="345">Quotas · Usage · Requests</text><text x="92" y="393">Separate dependency</text><text x="556" y="309">Collect every 15 seconds</text><text x="556" y="345">Two Codex quota windows</text><text x="556" y="393">Pair in Windows first</text><text x="1058" y="309">320 × 240 dashboard</text><text x="1058" y="345">4 pages · 3 buttons</text><text x="1058" y="393">No Wi-Fi / account keys</text></g>
+<g stroke="#46dbbf" fill="none" stroke-width="3" marker-end="url(#arrow)"><path d="M418 320 H516"/><path d="M902 320 H1018"/><path d="M1202 448 V479 H710 V448"/></g>
+<g fill="#46dbbf" font-size="17" text-anchor="middle"><text x="465" y="299">HTTP</text><text x="960" y="299">BLE v4</text><text x="1100" y="507">Refresh / focus Agent</text></g>
+<text x="58" y="560" fill="#94a8b5" font-size="18">Signal-flow illustration · the ESP32 receives aggregate statistics, not login credentials</text>
+</g></svg>

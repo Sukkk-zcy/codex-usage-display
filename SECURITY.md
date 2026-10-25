@@ -1,19 +1,9 @@
-# Security policy
+# 安全问题
 
-## Supported version
+本项目通过本机 Magpie API 读取聚合用量，经六位码认证的加密 BLE 发送到设备。ESP32 不保存 OpenAI 登录凭据；固件没有 Wi-Fi 或 OTA。建议保持 API 只监听本机，不要把未认证统计接口暴露到公网。
 
-Until stable releases are published, only the latest commit on the default
-branch receives security fixes.
+如果发现可绕过 BLE 认证、执行白名单外动作或泄露凭据的问题，请勿先公开利用细节。优先使用仓库 Security 页的 **Report a vulnerability**（如已启用）。若该入口不可用，可先提交不含敏感细节的 Issue，请维护者提供私下报告方式。本项目没有承诺响应时限的商业支持。
 
-## Reporting a vulnerability
+日志和 `--once` 输出可能包含个人用量、模型名、设备地址、本机用户名与路径。公开 Issue 前请脱敏。不要上传 Magpie/账户凭据、个人原始请求、真实配对码或整个用户配置目录。
 
-Do not open a public issue for vulnerabilities involving Codex credentials,
-local transcript access, BLE pairing, command execution, or privacy.
-
-Use GitHub's private vulnerability reporting for this repository. Include
-affected versions, reproduction steps, impact, and any suggested mitigation.
-
-The device protocol intentionally accepts only allowlisted semantic actions.
-Reports that demonstrate arbitrary command execution, unauthenticated BLE
-writes, credential disclosure, or cross-user transcript access are especially
-important.
+当前支持范围为默认分支和最新公开版本，修复优先在默认分支提供。
